@@ -6,6 +6,7 @@ const engine = (on: On, ran: string[]) => {
   on('session.cwd', () => ({ value: '/work' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.close', () => ({ value: undefined }))
+  on('ui.panes', () => ({ value: [] }))
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('ui.status', () => ({ value: undefined }))
   on('tool.call', { tool: 'Bash' }, (_$, e) => {
@@ -68,4 +69,15 @@ test('a compound delete command is one all-or-nothing item', async ($, on) => {
 
   await $.tool.call({ tool: 'Bash', command: 'cd /tmp && rm -rf cache' })
   expect(ran).toEqual(['cd /tmp && rm -rf cache'])
+})
+
+test('with no pane drawn, the same question shows above the prompt', async ($, on) => {
+  const ran: string[] = []
+  engine(on, ran)
+  await $.tool.call({ tool: 'Bash', command: 'rm -rf build' })
+
+  const band = await $.ui.mount({ plugin: 'delete-guard', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false } })
+  const keys = (await band.findAll({ type: 'Button' })).map(b => b.key ?? '')
+  expect(keys.some(k => k.startsWith('ok:'))).toBe(true)
+  expect(keys.some(k => k.startsWith('no:'))).toBe(true)
 })

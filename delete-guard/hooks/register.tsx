@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { DeleteItem, DeleteRequest } from '../types'
 
@@ -108,6 +108,88 @@ function rebuild(found: Found, items: DeleteItem[]): string {
   return [...found.head, ...kept].map(t => t.raw).join(' ')
 }
 
+const draw = async ($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]) => {
+  const { Box, Text, Button } = $.ui.resolve(e)
+  const list = await read($, requests)
+  const pending = list.filter(r => r.status === 'pending')
+  const history = list.filter(r => r.status !== 'pending').slice(-3)
+
+  const toggle = (id: string, index: number) =>
+    update($, requests, l =>
+      l.map(r =>
+        r.id === id && r.status === 'pending'
+          ? { ...r, items: r.items.map((it, i) => (i === index ? { ...it, isKept: !it.isKept } : it)) }
+          : r,
+      ),
+    )
+
+  const decide = async (id: string, verdict: 'approved' | 'refused') => {
+    let settled: DeleteRequest | undefined
+    await update($, requests, l =>
+      l.map(r => {
+        if (r.id !== id || r.status !== 'pending') return r
+        const isAllKept = r.items.every(i => i.isKept)
+        settled = { ...r, status: verdict === 'refused' || isAllKept ? 'refused' : 'approved' }
+        return settled
+      }),
+    )
+    if (!settled) return
+    const names = (isKept: boolean) =>
+      settled?.items.filter(i => i.isKept === isKept).map(i => i.label).join(', ') ?? ''
+    const text =
+      settled.status === 'refused'
+        ? `delete-guard: the user refused the deletion (${settled.command}). Nothing was deleted. Do not retry.`
+        : `delete-guard: the user confirmed the deletion. Delete: ${names(false)}.` +
+          (names(true) ? ` Keep, do not delete: ${names(true)}.` : '') +
+          ` Re-run the exact same command now: ${settled.command}`
+    const stillPending = (await read($, requests)).some(r => r.status === 'pending')
+    if (!stillPending) {
+      $.ui.status(undefined)
+      await $.ui.close({ id: PANE })
+    }
+    void $.prompt.submit({ text })
+  }
+
+  return (
+    <Box flexDirection="column">
+      {pending.length === 0 && <Text dimColor>No deletions waiting.</Text>}
+      {pending.map(r => (
+        <Box flexDirection="column" key={r.id}>
+          <Text bold>Delete {r.items.length === 1 ? 'this' : `these ${r.items.length}`}?</Text>
+          <Text dimColor>{r.command}</Text>
+          {r.items.map((item, i) => (
+            <Button
+              key={`t:${r.id}:${i}`}
+              hotkey={i < 9 ? String(i + 1) : undefined}
+              dimColor={item.isKept}
+              onPress={() => toggle(r.id, i)}
+            >
+              {item.isKept ? '[ ] keep   ' : '[x] delete '}
+              {item.label}
+              {item.note ? <Text dimColor> ({item.note})</Text> : ''}
+            </Button>
+          ))}
+          <Box>
+            <Button key={`ok:${r.id}`} variant="primary" hotkey="c" onPress={() => decide(r.id, 'approved')}>
+              Confirm
+            </Button>
+            <Text> </Text>
+            <Button key={`no:${r.id}`} hotkey="r" onPress={() => decide(r.id, 'refused')}>
+              Refuse all
+            </Button>
+          </Box>
+          <Text dimColor>1-9 toggle a file, c confirm, r refuse all</Text>
+        </Box>
+      ))}
+      {history.map(r => (
+        <Text dimColor key={`h:${r.id}`}>
+          {r.status}: {r.items.filter(i => !i.isKept).length} deleted, {r.items.filter(i => i.isKept).length} kept
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -173,85 +255,15 @@ export const register: Register = on => {
       : { deny: 'delete-guard: its guard failed, so the deletion was not run.' },
   )
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
-    const list = await read($, requests)
-    const pending = list.filter(r => r.status === 'pending')
-    const history = list.filter(r => r.status !== 'pending').slice(-3)
+  on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => draw($, e))
 
-    const toggle = (id: string, index: number) =>
-      update($, requests, l =>
-        l.map(r =>
-          r.id === id && r.status === 'pending'
-            ? { ...r, items: r.items.map((it, i) => (i === index ? { ...it, isKept: !it.isKept } : it)) }
-            : r,
-        ),
-      )
+  // A pane opened by a hook waits undrawn on a narrow terminal, so the same question shows
+  // above the prompt at any width, until the pane itself is drawn.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const hasPending = (await read($, requests)).some(r => r.status === 'pending')
+    const isPaneUp = (await $.ui.panes()).some(p => p.id === PANE && p.isPlaced)
+    if (!hasPending || isPaneUp || e.props.hasSurvey) return next(e)
 
-    const decide = async (id: string, verdict: 'approved' | 'refused') => {
-      let settled: DeleteRequest | undefined
-      await update($, requests, l =>
-        l.map(r => {
-          if (r.id !== id || r.status !== 'pending') return r
-          const isAllKept = r.items.every(i => i.isKept)
-          settled = { ...r, status: verdict === 'refused' || isAllKept ? 'refused' : 'approved' }
-          return settled
-        }),
-      )
-      if (!settled) return
-      const names = (isKept: boolean) =>
-        settled?.items.filter(i => i.isKept === isKept).map(i => i.label).join(', ') ?? ''
-      const text =
-        settled.status === 'refused'
-          ? `delete-guard: the user refused the deletion (${settled.command}). Nothing was deleted. Do not retry.`
-          : `delete-guard: the user confirmed the deletion. Delete: ${names(false)}.` +
-            (names(true) ? ` Keep, do not delete: ${names(true)}.` : '') +
-            ` Re-run the exact same command now: ${settled.command}`
-      const stillPending = (await read($, requests)).some(r => r.status === 'pending')
-      if (!stillPending) {
-        $.ui.status(undefined)
-        await $.ui.close({ id: PANE })
-      }
-      void $.prompt.submit({ text })
-    }
-
-    return (
-      <Box flexDirection="column">
-        {pending.length === 0 && <Text dimColor>No deletions waiting.</Text>}
-        {pending.map(r => (
-          <Box flexDirection="column" key={r.id}>
-            <Text bold>Delete {r.items.length === 1 ? 'this' : `these ${r.items.length}`}?</Text>
-            <Text dimColor>{r.command}</Text>
-            {r.items.map((item, i) => (
-              <Button
-                key={`t:${r.id}:${i}`}
-                hotkey={i < 9 ? String(i + 1) : undefined}
-                dimColor={item.isKept}
-                onPress={() => toggle(r.id, i)}
-              >
-                {item.isKept ? '[ ] keep   ' : '[x] delete '}
-                {item.label}
-                {item.note ? <Text dimColor> ({item.note})</Text> : ''}
-              </Button>
-            ))}
-            <Box>
-              <Button key={`ok:${r.id}`} variant="primary" hotkey="c" onPress={() => decide(r.id, 'approved')}>
-                Confirm
-              </Button>
-              <Text> </Text>
-              <Button key={`no:${r.id}`} hotkey="r" onPress={() => decide(r.id, 'refused')}>
-                Refuse all
-              </Button>
-            </Box>
-            <Text dimColor>1-9 toggle a file, c confirm, r refuse all</Text>
-          </Box>
-        ))}
-        {history.map(r => (
-          <Text dimColor key={`h:${r.id}`}>
-            {r.status}: {r.items.filter(i => !i.isKept).length} deleted, {r.items.filter(i => i.isKept).length} kept
-          </Text>
-        ))}
-      </Box>
-    )
+    return draw($, e)
   })
 }
