@@ -1,0 +1,6 @@
+{
+  "name": "octopus-crew",
+  "version": "0.1.0",
+  "description": "On load and reload, shows an octopus for the advisor model and for each subagent model, each in its own colour.",
+  "types": "./types/index.d.ts"
+}

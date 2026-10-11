@@ -1,0 +1,16 @@
+{
+  "name": "claude-mods",
+  "owner": { "name": "EmanueleNene" },
+  "plugins": [
+    {
+      "name": "delete-guard",
+      "source": "./delete-guard",
+      "description": "A pane that lists the files a delete command would remove, with a keep/delete toggle per file and Confirm or Refuse buttons."
+    },
+    {
+      "name": "octopus-crew",
+      "source": "./octopus-crew",
+      "description": "Shows a pixel mascot for the current model, the advisor and each subagent model, each in its own colour."
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "delete-guard",
+  "version": "0.1.0",
+  "description": "A pane that lists the files a delete command would remove, with a keep/delete toggle per file and Confirm or Refuse buttons.",
+  "types": "./types/index.d.ts"
+}
