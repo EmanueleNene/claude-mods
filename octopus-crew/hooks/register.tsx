@@ -140,9 +140,11 @@ export const parseFleetFiles = (files: Readonly<Record<string, string>>): CrewOc
     .sort(([a], [b]) => a.localeCompare(b))
     .flatMap(([name, metaText]) => {
       const taskId = name.slice(0, -'.meta'.length)
-      if (parseMeta(metaText).kind !== 'crewmate') return []
+      const kind = parseMeta(metaText).kind
+      if (kind !== 'ship' && kind !== 'scout' && kind !== 'secondmate') return []
       const status = parseCrewStatus(files[`${taskId}.status`] ?? '')
-      return [{ id: `crew:${taskId}`, role: taskId, model: status.state, color: crewColor(status.state, taskId, used[status.state]), state: status.state, finished: status.finished }]
+      const role = kind === 'secondmate' ? `secondmate · ${taskId}` : taskId
+      return [{ id: `crew:${taskId}`, role, model: status.state, color: crewColor(status.state, taskId, used[status.state]), state: status.state, finished: status.finished }]
     })
 }
 
@@ -219,7 +221,7 @@ export const register: Register = (on, options: PluginOptions) => {
     return next(e)
   })
 
-  // Every subagent the session spawns gets an octopus of its own, once per type and model.
+  // Each Claude subagent gets its own octopus, keyed by the runtime's agent id.
   on('agent.spawn', async ($, e, next) => {
     const settings = await $.settings.read()
     const settingsEnv = (settings.env ?? {}) as Record<string, unknown>
@@ -229,9 +231,17 @@ export const register: Register = (on, options: PluginOptions) => {
       asText(settingsEnv.CLAUDE_CODE_SUBAGENT_MODEL) ??
       (await $.session.model())
     const role = asText(e.subagentType) ?? 'subagent'
-    await update($, octopuses, list => upsert(list, { id: `spawn:${role}:${model}`, role, model }))
-    await update($, isHidden, () => false)
+    const result = await next(e)
+    if (result.agentId) {
+      await update($, octopuses, list => upsert(list, { id: `spawn:${result.agentId}`, role, model: asText(result.model) ?? model }))
+      await update($, isHidden, () => false)
+    }
+    return result
+  })
 
+  // turn.complete is the documented end of an agent loop; remove its live octopus.
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId) await update($, octopuses, list => list.filter(o => o.id !== `spawn:${e.agentId}`))
     return next(e)
   })
 
