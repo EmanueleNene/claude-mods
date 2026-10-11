@@ -1,18 +1,27 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, PluginOptions, RasterProps, Register } from 'claude-code'
 
-import type { Octopus } from '../types'
+import type { CrewOctopus, Octopus } from '../types'
 
 const octopuses = atom({ plugin: 'octopus-crew', key: 'octopuses' } as const, [])
+const crewOctopuses = atom({ plugin: 'octopus-crew', key: 'crewOctopuses' } as const, [])
 const isHidden = atom({ plugin: 'octopus-crew', key: 'isHidden' } as const, false)
 
 /** One colour per octopus, in the order they first appear. */
 /** Claude's own orange, Clawd's body colour: kept for the session's current model alone. */
 const CLAUDE_ORANGE = '#d77757'
 const PALETTE = ['#e255d0', '#35c9d8', '#3b82f6', '#7ed957', '#ff6b6b', '#8f7bff', '#f2e94e', '#ff9ecb']
+const CREW_PALETTES = {
+  working: ['#00a6a6', '#008f83', '#007f9e', '#2563eb', '#0e7490', '#a21caf', '#059669', '#0f766e', '#0891b2', '#0284c7', '#0d9488', '#16a34a', '#4f46e5', '#7c3aed', '#9333ea', '#c026d3'],
+  waiting: ['#b77900', '#a16207', '#c2410c', '#9a6700', '#d97706', '#b45309', '#854d0e', '#ca8a04'],
+  done: ['#15803d', '#16803c', '#047857', '#2f855a', '#166534', '#0f766e', '#3f7d20', '#4d7c0f'],
+  gone: ['#6b7280', '#737373', '#64748b', '#71717a', '#78716c', '#475569', '#52525b', '#57534e'],
+} as const
+const CREW_STATE_COLORS: Record<FleetStatus, readonly string[]> = CREW_PALETTES
 
 const ART = [' ,---. ', '( o o )', ' \\_-_/ ', '/|/|\\|\\']
 const MAX = 8
+const FLEET_REFRESH_MS = 5000
 
 // The creature is Claude Code's own mascot, Clawd, copied from the pixel grid the CLI draws
 // (an 8px-cell SVG): a body, two arms, two eyes and four legs. B body, A arm or leg, E eye.
@@ -100,9 +109,81 @@ const upsert = (list: Octopus[], next: Omit<Octopus, 'color'>, fixed?: string): 
 
 const HEAD = ['main', 'advisor', 'subagent-default']
 
-export const register: Register = on => {
+type FleetStatus = CrewOctopus['state']
+
+/** Status files are append-only; ignore wake/event lines and use the latest state record. */
+export const parseCrewStatus = (text: string): { state: FleetStatus; finished: boolean } => {
+  const recognized = text.split(/\r?\n/).map(line => /^(working|waiting|blocked|needs-decision|done|failed|cancelled|endpoint-gone|endpoint gone):/i.exec(line.trim())?.[1]?.toLowerCase()).filter((s): s is string => Boolean(s))
+  const last = recognized.at(-1) ?? 'working'
+  if (last === 'done') return { state: 'done', finished: true }
+  if (last === 'failed' || last === 'cancelled') return { state: 'gone', finished: true }
+  if (last === 'endpoint-gone' || last === 'endpoint gone') return { state: 'gone', finished: true }
+  if (last === 'blocked' || last === 'waiting' || last === 'needs-decision') return { state: 'waiting', finished: false }
+  return { state: 'working', finished: false }
+}
+
+const parseMeta = (text: string): Record<string, string> => {
+  const values: Record<string, string> = {}
+  for (const line of text.split(/\r?\n/)) {
+    const cut = line.indexOf('=')
+    if (cut > 0) values[line.slice(0, cut).trim()] = line.slice(cut + 1).trim()
+  }
+  return values
+}
+
+export const isCrewDimmed = (octopus: CrewOctopus): boolean => octopus.finished
+
+export const parseFleetFiles = (files: Readonly<Record<string, string>>): CrewOctopus[] => {
+  const used: Record<FleetStatus, Set<string>> = { working: new Set(), waiting: new Set(), done: new Set(), gone: new Set() }
+  return Object.entries(files)
+    .filter(([name]) => name.endsWith('.meta'))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .flatMap(([name, metaText]) => {
+      const taskId = name.slice(0, -'.meta'.length)
+      if (parseMeta(metaText).kind !== 'crewmate') return []
+      const status = parseCrewStatus(files[`${taskId}.status`] ?? '')
+      return [{ id: `crew:${taskId}`, role: taskId, model: status.state, color: crewColor(status.state, taskId, used[status.state]), state: status.state, finished: status.finished }]
+    })
+}
+
+const crewColor = (state: FleetStatus, taskId: string, used: Set<string>): string => {
+  const colors = CREW_STATE_COLORS[state]
+  let hash = 0
+  for (const char of taskId) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
+  const start = hash % colors.length
+  const color = colors.map((_, offset) => colors[(start + offset) % colors.length]).find(candidate => candidate !== undefined && !used.has(candidate)) ?? colors[start] ?? '#ffffff'
+  used.add(color)
+  return color
+}
+
+const loadCrew = async ($: EngineInterface, home: string): Promise<CrewOctopus[]> => {
+  try {
+    const entries = await $.fs.list(`${home.replace(/\/$/, '')}/state`)
+    const metas = entries.filter(entry => entry.kind === 'file' && entry.name.endsWith('.meta'))
+    const files: Record<string, string> = {}
+    for (const entry of metas) {
+      try {
+        files[entry.name] = await $.fs.read(`${home.replace(/\/$/, '')}/state/${entry.name}`)
+        const statusName = `${entry.name.slice(0, -'.meta'.length)}.status`
+        files[statusName] = await $.fs.read(`${home.replace(/\/$/, '')}/state/${statusName}`).catch(() => '')
+      } catch {
+        // A task may disappear while being read; the next poll will reconcile it.
+      }
+    }
+    return parseFleetFiles(files)
+  } catch {
+    // An unset, missing, or inaccessible fleet folder is deliberately silent.
+    return []
+  }
+}
+
+export const register: Register = (on, options: PluginOptions) => {
+  let stopFleetPolling: ReturnType<EngineInterface['clock']['every']> | undefined
+
   // A reload runs session.start again: read the models afresh and show the band again.
   on('session.start', async ($, e, next) => {
+    stopFleetPolling?.cancel()
+    stopFleetPolling = undefined
     const settings = await $.settings.read()
     const settingsEnv = (settings.env ?? {}) as Record<string, unknown>
     const advisor = asText(settings.advisorModel)
@@ -121,6 +202,19 @@ export const register: Register = on => {
       return [...HEAD.map(id => fresh.find(o => o.id === id)).filter((o): o is Octopus => o !== undefined), ...fresh.filter(o => !HEAD.includes(o.id))]
     })
     await update($, isHidden, () => false)
+
+    const home = asText(options.firstmateHome)
+    if (home) {
+      await update($, crewOctopuses, () => [])
+      const initialCrew = await loadCrew($, home)
+      await update($, crewOctopuses, () => initialCrew)
+      stopFleetPolling = $.clock.every(FLEET_REFRESH_MS, async () => {
+        const refreshed = await loadCrew($, home)
+        await update($, crewOctopuses, () => refreshed)
+      })
+    } else {
+      await update($, crewOctopuses, () => [])
+    }
 
     return next(e)
   })
@@ -143,16 +237,24 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const list = await read($, octopuses)
-    if (e.props.hasSurvey || list.length === 0 || (await read($, isHidden))) return next(e)
+    const crew = await read($, crewOctopuses)
+    const hidden = await read($, isHidden)
+    if (e.props.hasSurvey) return next(e)
 
     const ui = $.ui.resolve(e)
     const { Box, Button, Text } = ui
-    const Raster = e.surface === 'terminal' ? (ui as { Raster?: typeof ui.Box }).Raster : undefined
+    const Raster = e.surface === 'terminal' ? (ui as { Raster?: (props: RasterProps) => JSX.Element }).Raster : undefined
+    const displayed: Array<Octopus | CrewOctopus> = [...list, ...crew]
+    const toggle = () => update($, isHidden, value => !value)
+
+    if (hidden) {
+      return <Button key="show-octopuses" label="Show octopuses" onPress={toggle} />
+    }
 
     return (
       <Box flexDirection="column">
         <Box flexWrap="wrap">
-          {list.map(o => (
+          {displayed.map(o => (
             <Box flexDirection="column" key={`o:${o.id}`} marginRight={3}>
               {Raster ? (
                 <Raster key={`r:${o.id}`} columns={SPRITE_WIDTH} rows={SPRITE_HEIGHT / 2} cells={cellsFor(o.color)} />
@@ -163,14 +265,14 @@ export const register: Register = on => {
                   </Text>
                 ))
               )}
-              <Text bold color={o.color}>
+              <Text bold color={o.color} dimColor={'finished' in o && isCrewDimmed(o)}>
                 {o.role}
               </Text>
-              <Text dimColor>{o.model}</Text>
+              <Text dimColor={'finished' in o && isCrewDimmed(o)}>{'state' in o ? o.state : o.model}</Text>
             </Box>
           ))}
         </Box>
-        <Button key="hide" label="Hide octopuses" dimColor onPress={() => update($, isHidden, () => true)} />
+        <Button key="hide" label="Hide octopuses" dimColor onPress={toggle} />
       </Box>
     )
   })

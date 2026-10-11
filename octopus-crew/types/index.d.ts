@@ -9,8 +9,19 @@ export type Octopus = {
   color: string
 }
 
+export type CrewOctopus = {
+  id: string
+  /** The firstmate task id. */
+  role: string
+  /** The current fleet state, shown below the task id. */
+  model: string
+  color: string
+  state: 'working' | 'waiting' | 'done' | 'gone'
+  finished: boolean
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'octopus-crew': { octopuses: Octopus[]; isHidden: boolean }
+    'octopus-crew': { octopuses: Octopus[]; crewOctopuses: CrewOctopus[]; isHidden: boolean }
   }
 }
