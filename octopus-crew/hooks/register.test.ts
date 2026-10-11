@@ -9,6 +9,7 @@ const engine = (on: On, settings: Record<string, unknown>) => {
   on('env.get', () => ({ value: undefined }))
   on('session.model', () => ({ value: 'sonnet' }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('turn.complete', (_$, e) => ({ text: e.answer }))
 }
 
 
@@ -29,28 +30,34 @@ test('a load draws one octopus for the advisor and one for the subagents, in dif
   expect(hues.has('#d77757')).toBe(true)
 })
 
-test('a spawned subagent gets an octopus of its own colour, once per type and model', async ($, on) => {
+test('each live spawned subagent gets its own octopus, removed on turn.complete', async ($, on) => {
   engine(on, { advisorModel: 'opus' })
-  on('agent.spawn', (_$, e) => ({ model: e.model ?? 'sonnet' }))
+  let nextAgent = 0
+  on('agent.spawn', (_$, e) => ({ model: e.model ?? 'sonnet', agentId: `agent-${++nextAgent}` }))
   await $.session.start({ source: 'startup', cwd: '/work' } as never)
   await $.agent.spawn({ prompt: 'x', subagentType: 'Explore', model: 'haiku' } as never)
   await $.agent.spawn({ prompt: 'y', subagentType: 'Explore', model: 'haiku' } as never)
 
   const ui = await $.ui.mount(PANE)
   const text = await ui.findAll({ type: 'Text' })
-  expect(text.filter(t => t.text === 'Explore')).toHaveLength(1)
+  expect(text.filter(t => t.text === 'Explore')).toHaveLength(2)
+  expect(text.filter(t => t.text === 'haiku')).toHaveLength(2)
   const hues = new Set(text.map(t => String(t.props.color ?? '')).filter(Boolean))
-  expect(hues.size).toBe(4)
+  expect(hues.size).toBe(5)
+
+  await $.turn.complete({ agentId: 'agent-1', answer: 'finished' } as never)
+  const afterEnd = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  expect(afterEnd.filter(text => text === 'Explore')).toHaveLength(1)
 })
 
 test('crew task files map state, dim finished tasks, and use a distinct expanded palette', { options: { firstmateHome: '/fake-firstmate' } }, async ($, on) => {
   engine(on, {})
   mock.clock(on)
   const files: Record<string, string> = {
-    '/fake-firstmate/state/build-17.meta': 'kind=crewmate\nharness=claude\nmodel=sonnet\n',
-    '/fake-firstmate/state/review-22.meta': 'kind=crewmate\nharness=claude\n',
-    '/fake-firstmate/state/old-3.meta': 'kind=crewmate\n',
-    '/fake-firstmate/state/other.meta': 'kind=task\n',
+    '/fake-firstmate/state/build-17.meta': 'kind=ship\nharness=pi\nmodel=sonnet\n',
+    '/fake-firstmate/state/review-22.meta': 'kind=scout\nharness=claude\n',
+    '/fake-firstmate/state/old-3.meta': 'kind=secondmate\nharness=pi\n',
+    '/fake-firstmate/state/other.meta': 'kind=task\nharness=pi\n',
     '/fake-firstmate/state/build-17.status': 'working: implementing\nwake: ping\n',
     '/fake-firstmate/state/review-22.status': 'working: review\nblocked: needs approval\nwake: ping\n',
     '/fake-firstmate/state/old-3.status': 'working: started\ndone: complete\nwake: ping\n',
@@ -59,9 +66,9 @@ test('crew task files map state, dim finished tasks, and use a distinct expanded
   const fakeFolder: Record<string, string> = Object.fromEntries(Object.entries(files).map(([path, content]) => [path.split('/').at(-1)!, content]))
   await $.session.start({ source: 'startup', cwd: '/work' } as never)
   const crew = parseFleetFiles(fakeFolder)
-  expect(crew.map(o => o.role)).toEqual(['build-17', 'old-3', 'review-22'])
+  expect(crew.map(o => o.role)).toEqual(['build-17', 'secondmate · old-3', 'review-22'])
   expect(crew.map(o => o.state)).toEqual(['working', 'done', 'waiting'])
-  const finished = crew.find(o => o.role === 'old-3')!
+  const finished = crew.find(o => o.role === 'secondmate · old-3')!
   const active = crew.find(o => o.role === 'build-17')!
   expect(finished.finished).toBe(true)
   expect(isCrewDimmed(finished)).toBe(true)
@@ -71,9 +78,29 @@ test('crew task files map state, dim finished tasks, and use a distinct expanded
   expect(parseCrewStatus('endpoint gone: unavailable\\nwake: ping\\n')).toEqual({ state: 'gone', finished: true })
   expect(crew.some(o => o.role === 'other')).toBe(false)
 
-  const manyCrew = parseFleetFiles(Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`worker-${i}.meta`, 'kind=crewmate\n'])))
+  const manyCrew = parseFleetFiles(Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`worker-${i}.meta`, 'kind=ship\nharness=pi\n'])))
   expect(new Set(manyCrew.map(o => o.color)).size).toBe(16)
   expect(manyCrew.some(o => ['#d77757', '#e255d0', '#35c9d8', '#3b82f6', '#7ed957', '#ff6b6b', '#8f7bff', '#f2e94e', '#ff9ecb'].includes(o.color))).toBe(false)
+})
+
+test('the real firstmate state-directory path renders one octopus per ship, scout, and secondmate', { options: { firstmateHome: '/fake-firstmate' } }, async ($, on) => {
+  engine(on, {})
+  const files: Record<string, string> = {
+    '/fake-firstmate/state/ship-1.meta': 'kind=ship\nharness=pi\nmodel=sonnet\n',
+    '/fake-firstmate/state/scout-2.meta': 'kind=scout\nharness=claude\n',
+    '/fake-firstmate/state/secondmate-3.meta': 'kind=secondmate\nharness=pi\n',
+    '/fake-firstmate/state/not-a-worker.meta': 'kind=task\nharness=pi\n',
+    '/fake-firstmate/state/ship-1.status': 'working: implementing\nwake: ping\n',
+  }
+  on('fs.list', () => ({ value: Object.keys(files).filter(path => path.endsWith('.meta')).map(path => ({ name: path.split('/').at(-1)!, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) }))
+  on('fs.read', (_$, e) => ({ value: files[e.path] ?? '' }))
+  mock.clock(on)
+  await $.session.start({ source: 'startup', cwd: '/work' } as never)
+  const ui = await $.ui.mount(PANE)
+  const shown = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  expect(shown.filter(text => ['ship-1', 'scout-2', 'secondmate · secondmate-3'].includes(text))).toHaveLength(3)
+  expect(shown).not.toContain('not-a-worker')
+  expect(shown).toContain('working')
 })
 
 test('an unset firstmate home adds no crew octopuses', async ($, on) => {
