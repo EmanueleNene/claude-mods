@@ -1,7 +1,7 @@
 export type Octopus = {
-  /** Stable key: "advisor", "subagent-default", or "spawn:<agent-id>". */
+  /** Stable key: "spawn:<agent-id>". */
   id: string
-  /** Who it stands for: "advisor", "subagents" or a subagent type. */
+  /** Who it stands for: the subagent type. */
   role: string
   /** The model it runs, as configured or as the spawn named it. */
   model: string

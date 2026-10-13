@@ -8,8 +8,6 @@ const crewOctopuses = atom({ plugin: 'octopus-crew', key: 'crewOctopuses' } as c
 const isHidden = atom({ plugin: 'octopus-crew', key: 'isHidden' } as const, false)
 
 /** One colour per octopus, in the order they first appear. */
-/** Claude's own orange, Clawd's body colour: kept for the session's current model alone. */
-const CLAUDE_ORANGE = '#d77757'
 const PALETTE = ['#e255d0', '#35c9d8', '#3b82f6', '#7ed957', '#ff6b6b', '#8f7bff', '#f2e94e', '#ff9ecb']
 const CREW_PALETTES = {
   working: ['#00a6a6', '#008f83', '#007f9e', '#2563eb', '#0e7490', '#a21caf', '#059669', '#0f766e', '#0891b2', '#0284c7', '#0d9488', '#16a34a', '#4f46e5', '#7c3aed', '#9333ea', '#c026d3'],
@@ -99,15 +97,13 @@ const asText = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
 
 /** Adds or retunes one octopus; a colour once given stays. */
-const upsert = (list: Octopus[], next: Omit<Octopus, 'color'>, fixed?: string): Octopus[] => {
+const upsert = (list: Octopus[], next: Omit<Octopus, 'color'>): Octopus[] => {
   const at = list.findIndex(o => o.id === next.id)
-  if (at >= 0) return list.map((o, i) => (i === at ? { ...o, ...next, color: fixed ?? o.color } : o))
+  if (at >= 0) return list.map((o, i) => (i === at ? { ...o, ...next } : o))
   const used = new Set(list.map(o => o.color))
-  const color = fixed ?? PALETTE.find(c => !used.has(c)) ?? PALETTE[list.length % PALETTE.length] ?? '#ffffff'
+  const color = PALETTE.find(c => !used.has(c)) ?? PALETTE[list.length % PALETTE.length] ?? '#ffffff'
   return [...list, { ...next, color }].slice(-MAX)
 }
-
-const HEAD = ['main', 'advisor', 'subagent-default']
 
 type FleetStatus = CrewOctopus['state']
 
@@ -182,28 +178,11 @@ const loadCrew = async ($: EngineInterface, home: string): Promise<CrewOctopus[]
 export const register: Register = (on, options: PluginOptions) => {
   let stopFleetPolling: ReturnType<EngineInterface['clock']['every']> | undefined
 
-  // A reload runs session.start again: read the models afresh and show the band again.
+  // A reload runs session.start again; the hidden choice is kept, and only summoned octopuses stay.
   on('session.start', async ($, e, next) => {
     stopFleetPolling?.cancel()
     stopFleetPolling = undefined
-    const settings = await $.settings.read()
-    const settingsEnv = (settings.env ?? {}) as Record<string, unknown>
-    const advisor = asText(settings.advisorModel)
-    const subagents =
-      (await $.env.get('CLAUDE_CODE_SUBAGENT_MODEL')) ?? asText(settingsEnv.CLAUDE_CODE_SUBAGENT_MODEL)
-    const main = await $.session.model()
-
-    await update($, octopuses, list => {
-      // The three fixed octopuses lead, in order; spawned ones follow, colours kept.
-      const spawned = list.filter(o => !HEAD.includes(o.id))
-      const fresh = upsert(upsert(upsert(spawned, { id: 'main', role: 'current', model: main }, CLAUDE_ORANGE), { id: 'advisor', role: 'advisor', model: advisor ?? 'not set' }), {
-        id: 'subagent-default',
-        role: 'subagents',
-        model: subagents ?? `${main} (inherits)`,
-      })
-      return [...HEAD.map(id => fresh.find(o => o.id === id)).filter((o): o is Octopus => o !== undefined), ...fresh.filter(o => !HEAD.includes(o.id))]
-    })
-    await update($, isHidden, () => false)
+    await update($, octopuses, list => list.filter(o => o.id.startsWith('spawn:')))
 
     const home = asText(options.firstmateHome)
     if (home) {
@@ -234,7 +213,6 @@ export const register: Register = (on, options: PluginOptions) => {
     const result = await next(e)
     if (result.agentId) {
       await update($, octopuses, list => upsert(list, { id: `spawn:${result.agentId}`, role, model: asText(result.model) ?? model }))
-      await update($, isHidden, () => false)
     }
     return result
   })
@@ -251,14 +229,16 @@ export const register: Register = (on, options: PluginOptions) => {
     const hidden = await read($, isHidden)
     if (e.props.hasSurvey) return next(e)
 
+    const displayed: Array<Octopus | CrewOctopus> = [...list, ...crew]
+    if (displayed.length === 0) return next(e)
+
     const ui = $.ui.resolve(e)
     const { Box, Button, Text } = ui
     const Raster = e.surface === 'terminal' ? (ui as { Raster?: (props: RasterProps) => JSX.Element }).Raster : undefined
-    const displayed: Array<Octopus | CrewOctopus> = [...list, ...crew]
     const toggle = () => update($, isHidden, value => !value)
 
     if (hidden) {
-      return <Button key="show-octopuses" label="Show octopuses" onPress={toggle} />
+      return <Button key="show-octopuses" label={`Show octopuses (${displayed.length})`} onPress={toggle} />
     }
 
     return (
@@ -282,7 +262,7 @@ export const register: Register = (on, options: PluginOptions) => {
             </Box>
           ))}
         </Box>
-        <Button key="hide" label="Hide octopuses" dimColor onPress={toggle} />
+        <Button key="hide" label="Hide octopuses" onPress={toggle} />
       </Box>
     )
   })

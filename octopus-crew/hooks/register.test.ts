@@ -10,24 +10,18 @@ const engine = (on: On, settings: Record<string, unknown>) => {
   on('session.model', () => ({ value: 'sonnet' }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
+  // The engine's own empty band, drawn when the mod hands the band on.
+  on('ui.render', ($, e) => h($.ui.resolve(e).Box, {}))
 }
 
 
-test('a load draws one octopus for the advisor and one for the subagents, in different colours', async ($, on) => {
+test('nothing is drawn until an octopus is summoned', async ($, on) => {
   engine(on, { advisorModel: 'opus', env: { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' } })
   await $.session.start({ source: 'startup', cwd: '/work' } as never)
 
   const ui = await $.ui.mount(PANE)
-  const text = await ui.findAll({ type: 'Text' })
-  const shown = text.map(t => t.text).join('\n')
-  expect(shown).toContain('advisor')
-  expect(shown).toContain('opus')
-  expect(shown).toContain('subagents')
-  expect(shown).toContain('haiku')
-
-  const hues = new Set(text.map(t => String(t.props.color ?? '')).filter(Boolean))
-  expect(hues.size).toBe(3)
-  expect(hues.has('#d77757')).toBe(true)
+  expect(await ui.find({ type: 'Raster' })).toBeUndefined()
+  expect(await ui.find({ key: 'hide' })).toBeUndefined()
 })
 
 test('each live spawned subagent gets its own octopus, removed on turn.complete', async ($, on) => {
@@ -43,7 +37,7 @@ test('each live spawned subagent gets its own octopus, removed on turn.complete'
   expect(text.filter(t => t.text === 'Explore')).toHaveLength(2)
   expect(text.filter(t => t.text === 'haiku')).toHaveLength(2)
   const hues = new Set(text.map(t => String(t.props.color ?? '')).filter(Boolean))
-  expect(hues.size).toBe(5)
+  expect(hues.size).toBe(2)
 
   await $.turn.complete({ agentId: 'agent-1', answer: 'finished' } as never)
   const afterEnd = (await ui.findAll({ type: 'Text' })).map(t => t.text)
@@ -111,21 +105,31 @@ test('an unset firstmate home adds no crew octopuses', async ($, on) => {
   expect(text).not.toContain('build-17')
 })
 
-test('the band hide and show buttons toggle every octopus', async ($, on) => {
+test('the band hide and show buttons toggle every octopus, and hidden stays hidden', async ($, on) => {
   engine(on, {})
+  let nextAgent = 0
+  on('agent.spawn', (_$, e) => ({ model: e.model ?? 'sonnet', agentId: `agent-${++nextAgent}` }))
   await $.session.start({ source: 'startup', cwd: '/work' } as never)
+  await $.agent.spawn({ prompt: 'x', subagentType: 'Explore' } as never)
   const ui = await $.ui.mount(PANE)
   expect(await ui.find({ type: 'Raster' })).toBeDefined()
   await ui.press({ key: 'hide' })
   expect(await ui.find({ type: 'Raster' })).toBeUndefined()
-  expect(await ui.find({ key: 'show-octopuses' })).toBeDefined()
+
+  await $.agent.spawn({ prompt: 'y', subagentType: 'Explore' } as never)
+  await $.session.start({ source: 'startup', cwd: '/work' } as never)
+  expect(await ui.find({ type: 'Raster' })).toBeUndefined()
+  expect((await ui.find({ key: 'show-octopuses' }))?.props.label).toBe('Show octopuses (2)')
   await ui.press({ key: 'show-octopuses' })
-  expect(await ui.find({ type: 'Raster' })).toBeDefined()
+  expect(await ui.findAll({ type: 'Raster' })).toHaveLength(2)
 })
 
 test('each octopus is a picture of its own: one Raster apiece, no two alike', async ($, on) => {
-  engine(on, { advisorModel: 'opus', env: { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' } })
+  engine(on, {})
+  let nextAgent = 0
+  on('agent.spawn', (_$, e) => ({ model: e.model ?? 'sonnet', agentId: `agent-${++nextAgent}` }))
   await $.session.start({ source: 'startup', cwd: '/work' } as never)
+  for (const prompt of ['a', 'b', 'c']) await $.agent.spawn({ prompt, subagentType: 'Explore' } as never)
 
   const ui = await $.ui.mount(PANE)
   const pictures = await ui.findAll({ type: 'Raster' })
