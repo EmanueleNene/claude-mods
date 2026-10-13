@@ -23,32 +23,11 @@ const ART = [' ,---. ', '( o o )', ' \\_-_/ ', '/|/|\\|\\']
 const MAX = 8
 const FLEET_REFRESH_MS = 5000
 
-// The creature is Claude Code's own mascot, Clawd, copied from the pixel grid the CLI draws
-// (an 8px-cell SVG): a body, two arms, two eyes and four legs. B body, A arm or leg, E eye.
-const SPRITE_WIDTH = 11
-const SPRITE_HEIGHT = 8
-const sprite = (): string[] => {
-  const rows: string[] = []
-  for (let y = 0; y < SPRITE_HEIGHT; y++) {
-    const row = Array.from({ length: SPRITE_WIDTH }, () => '.')
-    const fill = (from: number, to: number, ch: string) => {
-      for (let x = from; x <= to; x++) row[x] = ch
-    }
-    if (y <= 5) fill(2, 8, 'B')
-    if (y === 4 || y === 5) {
-      fill(0, 1, 'A')
-      fill(9, 10, 'A')
-    }
-    if (y === 2 || y === 3) {
-      row[3] = 'E'
-      row[7] = 'E'
-    }
-    if (y >= 6) for (const x of [2, 4, 6, 8]) row[x] = 'A'
-    rows.push(row.join(''))
-  }
-  return rows
-}
-const SPRITE = sprite()
+// The creature is Claude Code's own mascot, Clawd, after the pixel grid the CLI draws, at half
+// height: a body, two arms, two eyes and four legs. B body, A arm or leg, E eye.
+const SPRITE = ['.BBBBBBB.', '.BEBBBEB.', 'AABBBBBAA', '.A.A.A.A.']
+const SPRITE_WIDTH = 9
+const SPRITE_HEIGHT = 4
 
 const DEFAULT = 0x01000000
 const EYE = 0x141414

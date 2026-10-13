@@ -159,6 +159,6 @@ test('each octopus is a picture of its own: one Raster apiece, no two alike', as
   expect(pictures).toHaveLength(6)
   const cells = pictures.map(p => String(p.props.cells))
   expect(new Set(cells).size).toBe(6)
-  expect(pictures[0]?.props.columns).toBe(11)
-  expect(pictures[0]?.props.rows).toBe(4)
+  expect(pictures[0]?.props.columns).toBe(9)
+  expect(pictures[0]?.props.rows).toBe(2)
 })

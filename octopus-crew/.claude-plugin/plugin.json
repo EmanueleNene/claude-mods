@@ -1,6 +1,6 @@
 {
   "name": "octopus-crew",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Shows an octopus above the prompt for each summoned subagent or firstmate crew worker.",
   "types": "./types/index.d.ts",
   "userConfig": {
