@@ -5,6 +5,9 @@ import type { DeleteItem, DeleteRequest } from '../types'
 
 const PANE = 'delete-guard'
 const requests = atom({ plugin: 'delete-guard', key: 'requests' } as const, [])
+// The guard holds new deletions only while this skill's turn runs.
+const SKILL = 'clean-generated-artifacts'
+const armed = atom({ plugin: 'delete-guard', key: 'armed' } as const, false)
 
 const DELETERS = new Set(['rm', 'rmdir', 'unlink', 'shred', 'trash', 'trash-put'])
 const COMPOUND = /[;&|<>`\n]|\$\(/
@@ -64,7 +67,6 @@ function describe(command: string): Found | undefined {
     const verb = first === 'git' && tokens[1]?.value === 'rm' ? 2 : DELETERS.has(first) ? 1 : 0
     if (verb > 0) {
       let at = verb
-      let isRecursive = false
       while (at < tokens.length) {
         const t = (tokens[at] as Token).value
         if (t === '--') {
@@ -72,23 +74,11 @@ function describe(command: string): Found | undefined {
           break
         }
         if (!t.startsWith('-') || t === '-') break
-        if (/^-[a-zA-Z]*[rR]/.test(t) || t === '--recursive') isRecursive = true
         at++
       }
       const targets = tokens.slice(at)
       if (targets.length === 0) return undefined
-      const isDir = first === 'rmdir'
-      const items = targets.map((t): DeleteItem => {
-        const isPattern = /[*?[]/.test(t.raw)
-        const note = isRecursive
-          ? 'recursive'
-          : isDir
-            ? 'directory'
-            : isPattern
-              ? 'pattern, expands when run'
-              : undefined
-        return { label: t.value, note, isKept: false }
-      })
+      const items = targets.map((t): DeleteItem => ({ label: t.value, isKept: false }))
       return { head: tokens.slice(0, at), targets, items, isSplittable: true }
     }
   }
@@ -96,7 +86,7 @@ function describe(command: string): Found | undefined {
     return {
       head: [],
       targets: [],
-      items: [{ label: command, note: 'whole command, cannot be split', isKept: false }],
+      items: [{ label: command, isKept: false }],
       isSplittable: false,
     }
   }
@@ -106,6 +96,18 @@ function describe(command: string): Found | undefined {
 function rebuild(found: Found, items: DeleteItem[]): string {
   const kept = found.targets.filter((_, i) => !items[i]?.isKept)
   return [...found.head, ...kept].map(t => t.raw).join(' ')
+}
+
+/** A target split into its name and the folder it sits in, relative ones resolved against cwd. */
+function place(label: string, cwd: string): { name: string; folder: string } {
+  const path = label.length > 1 ? label.replace(/[/\\]+$/, '') : label
+  const at = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  const dir = at < 0 ? '' : path.slice(0, at)
+  const isAbsolute = /^([/\\~]|[a-zA-Z]:)/.test(path)
+  return {
+    name: at < 0 ? path : path.slice(at + 1) || path,
+    folder: isAbsolute ? dir || path.slice(0, 1) : dir ? `${cwd}/${dir}` : cwd,
+  }
 }
 
 const draw = async ($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]) => {
@@ -123,11 +125,22 @@ const draw = async ($: EngineInterface, e: Parameters<EngineInterface['ui']['res
       ),
     )
 
-  const decide = async (id: string, verdict: 'approved' | 'refused') => {
+  // All selected for deletion flips to all kept; otherwise everything is selected.
+  const toggleAll = (id: string) =>
+    update($, requests, l =>
+      l.map(r => {
+        if (r.id !== id || r.status !== 'pending') return r
+        const isKept = r.items.every(it => !it.isKept)
+        return { ...r, items: r.items.map(it => ({ ...it, isKept })) }
+      }),
+    )
+
+  const decide = async (id: string, verdict: 'approved' | 'refused', isAll = false) => {
     let settled: DeleteRequest | undefined
     await update($, requests, l =>
       l.map(r => {
         if (r.id !== id || r.status !== 'pending') return r
+        if (isAll) r = { ...r, items: r.items.map(it => ({ ...it, isKept: false })) }
         const isAllKept = r.items.every(i => i.isKept)
         settled = { ...r, status: verdict === 'refused' || isAllKept ? 'refused' : 'approved' }
         return settled
@@ -156,7 +169,6 @@ const draw = async ($: EngineInterface, e: Parameters<EngineInterface['ui']['res
       {pending.map(r => (
         <Box flexDirection="column" key={r.id}>
           <Text bold>Delete {r.items.length === 1 ? 'this' : `these ${r.items.length}`}?</Text>
-          <Text dimColor>{r.command}</Text>
           {r.items.map((item, i) => (
             <Button
               key={`t:${r.id}:${i}`}
@@ -165,20 +177,32 @@ const draw = async ($: EngineInterface, e: Parameters<EngineInterface['ui']['res
               onPress={() => toggle(r.id, i)}
             >
               {item.isKept ? '[ ] keep   ' : '[x] delete '}
-              {item.label}
-              {item.note ? <Text dimColor> ({item.note})</Text> : ''}
+              {r.isSplittable ? place(item.label, r.cwd).name : item.label}
+              <Text dimColor>  in {r.isSplittable ? place(item.label, r.cwd).folder : r.cwd}</Text>
             </Button>
           ))}
           <Box>
+            {r.items.length > 1 && (
+              <Button key={`all:${r.id}`} hotkey="a" onPress={() => toggleAll(r.id)}>
+                {r.items.every(it => !it.isKept) ? 'Select none' : 'Select all'}
+              </Button>
+            )}
+            {r.items.length > 1 && <Text> </Text>}
             <Button key={`ok:${r.id}`} variant="primary" hotkey="c" onPress={() => decide(r.id, 'approved')}>
               Confirm
             </Button>
             <Text> </Text>
+            {r.items.length > 1 && (
+              <Button key={`del:${r.id}`} hotkey="d" onPress={() => decide(r.id, 'approved', true)}>
+                Delete all
+              </Button>
+            )}
+            {r.items.length > 1 && <Text> </Text>}
             <Button key={`no:${r.id}`} hotkey="r" onPress={() => decide(r.id, 'refused')}>
               Refuse all
             </Button>
           </Box>
-          <Text dimColor>1-9 toggle a file, c confirm, r refuse all</Text>
+          <Text dimColor>1-9 toggle a file, a select all/none, c confirm, d delete all, r refuse all</Text>
         </Box>
       ))}
       {history.map(r => (
@@ -232,6 +256,8 @@ export const register: Register = on => {
       }
     }
 
+    if (!(await read($, armed))) return next(e)
+
     const request: DeleteRequest = {
       id: e.tool_use_id,
       command: e.command,
@@ -254,6 +280,17 @@ export const register: Register = on => {
       ? next(e)
       : { deny: 'delete-guard: its guard failed, so the deletion was not run.' },
   )
+
+  on('skill.prompt', { skill: SKILL }, async ($, e, next) => {
+    await update($, armed, () => true)
+    return next(e)
+  })
+
+  // Disarm when the main turn ends; a decision already asked for is still honoured on the retry.
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) await update($, armed, () => false)
+    return next(e)
+  })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => draw($, e))
 

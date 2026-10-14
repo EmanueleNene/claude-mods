@@ -1,8 +1,6 @@
 export type DeleteItem = {
   /** The target as written in the command (a path, or the whole command when it cannot be split). */
   label: string
-  /** Shown dim beside the label: "directory, recursive", "pattern", "whole command". */
-  note?: string
   /** True when the person toggled it to be kept (refused). */
   isKept: boolean
 }
@@ -21,6 +19,10 @@ export type DeleteRequest = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'delete-guard': { requests: DeleteRequest[] }
+    'delete-guard': {
+      requests: DeleteRequest[]
+      /** True while the clean-generated-artifacts skill's turn runs. */
+      armed: boolean
+    }
   }
 }
