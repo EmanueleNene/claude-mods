@@ -143,3 +143,29 @@ test('each file shows its name and the folder it is in', async ($, on) => {
   }
   expect(await ui.findAll({ type: 'Text', text: /build\/a\.txt/ })).toHaveLength(0)
 })
+
+test('the action buttons come before a long file list, so they never scroll away', async ($, on) => {
+  engine(on, [])
+  await arm($)
+  await $.tool.call({ tool: 'Bash', command: `rm ${Array.from({ length: 30 }, (_, i) => `f${i}.txt`).join(' ')}` })
+
+  const ui = await $.ui.mount(PANE)
+  const keys = (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '')
+  expect(keys.findIndex(k => k.startsWith('ok:'))).toBeLessThan(keys.findIndex(k => k.startsWith('t:')))
+})
+
+test('with two deletions waiting, only the first is drawn, so hotkeys do not clash', async ($, on) => {
+  const ran: string[] = []
+  engine(on, ran)
+  await arm($)
+  await $.tool.call({ tool: 'Bash', command: 'rm a.txt' })
+  await $.tool.call({ tool: 'Bash', command: 'rm b.txt' })
+
+  const ui = await $.ui.mount(PANE)
+  const ok = (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(k => k.startsWith('ok:'))
+  expect(ok).toHaveLength(1)
+  await ui.press({ key: ok[0] as string })
+
+  await $.tool.call({ tool: 'Bash', command: 'rm a.txt' })
+  expect(ran).toEqual(['rm a.txt'])
+})

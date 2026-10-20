@@ -166,28 +166,15 @@ const draw = async ($: EngineInterface, e: Parameters<EngineInterface['ui']['res
   return (
     <Box flexDirection="column">
       {pending.length === 0 && <Text dimColor>No deletions waiting.</Text>}
-      {pending.map(r => (
+      {/* One request at a time: hotkeys would clash across several, and the buttons sit
+          above the list so a long one never scrolls them out of the band's window. */}
+      {pending.slice(0, 1).map(r => (
         <Box flexDirection="column" key={r.id}>
-          <Text bold>Delete {r.items.length === 1 ? 'this' : `these ${r.items.length}`}?</Text>
-          {r.items.map((item, i) => (
-            <Button
-              key={`t:${r.id}:${i}`}
-              hotkey={i < 9 ? String(i + 1) : undefined}
-              dimColor={item.isKept}
-              onPress={() => toggle(r.id, i)}
-            >
-              {item.isKept ? '[ ] keep   ' : '[x] delete '}
-              {r.isSplittable ? place(item.label, r.cwd).name : item.label}
-              <Text dimColor>  in {r.isSplittable ? place(item.label, r.cwd).folder : r.cwd}</Text>
-            </Button>
-          ))}
-          <Box>
-            {r.items.length > 1 && (
-              <Button key={`all:${r.id}`} hotkey="a" onPress={() => toggleAll(r.id)}>
-                {r.items.every(it => !it.isKept) ? 'Select none' : 'Select all'}
-              </Button>
-            )}
-            {r.items.length > 1 && <Text> </Text>}
+          <Text bold>
+            Delete {r.items.length === 1 ? 'this' : `these ${r.items.length}`}?
+            {pending.length > 1 && <Text dimColor>  ({pending.length - 1} more waiting)</Text>}
+          </Text>
+          <Box flexWrap="wrap">
             <Button key={`ok:${r.id}`} variant="primary" hotkey="c" onPress={() => decide(r.id, 'approved')}>
               Confirm
             </Button>
@@ -201,8 +188,26 @@ const draw = async ($: EngineInterface, e: Parameters<EngineInterface['ui']['res
             <Button key={`no:${r.id}`} hotkey="r" onPress={() => decide(r.id, 'refused')}>
               Refuse all
             </Button>
+            {r.items.length > 1 && <Text> </Text>}
+            {r.items.length > 1 && (
+              <Button key={`all:${r.id}`} hotkey="a" onPress={() => toggleAll(r.id)}>
+                {r.items.every(it => !it.isKept) ? 'Select none' : 'Select all'}
+              </Button>
+            )}
           </Box>
-          <Text dimColor>1-9 toggle a file, a select all/none, c confirm, d delete all, r refuse all</Text>
+          <Text dimColor>c confirm, d delete all, r refuse all, a select all/none, 1-9 toggle a file</Text>
+          {r.items.map((item, i) => (
+            <Button
+              key={`t:${r.id}:${i}`}
+              hotkey={i < 9 ? String(i + 1) : undefined}
+              dimColor={item.isKept}
+              onPress={() => toggle(r.id, i)}
+            >
+              {item.isKept ? '[ ] keep   ' : '[x] delete '}
+              {r.isSplittable ? place(item.label, r.cwd).name : item.label}
+              <Text dimColor>  in {r.isSplittable ? place(item.label, r.cwd).folder : r.cwd}</Text>
+            </Button>
+          ))}
         </Box>
       ))}
       {history.map(r => (
