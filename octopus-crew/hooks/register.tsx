@@ -19,23 +19,46 @@ const CREW_PALETTES = {
 } as const
 const CREW_STATE_COLORS: Record<FleetStatus, readonly string[]> = CREW_PALETTES
 
-const ART = [' ,---. ', '( o o )', ' \\_-_/ ', '/|/|\\|\\']
+const ART = [' ^   ^ ', '( o.o )', ' (___) ']
 const MAX = 8
 const FLEET_REFRESH_MS = 5000
 
-// The creature is Claude Code's own mascot, Clawd, after the pixel grid the CLI draws, at half
-// height: a body, two arms, two eyes and four legs. B body, A arm or leg, E eye.
-const SPRITE = ['.BBBBBBB.', '.BEBBBEB.', 'AABBBBBAA', '.A.A.A.A.']
-const SPRITE_WIDTH = 9
-const SPRITE_HEIGHT = 4
+// Six original pixel creatures, 10x6, facing right: a cinder puff, a fin newt, a leaf cyclops,
+// a spark moth, a pebble bat and a lantern wisp. B body, A shadow, L highlight (all three from
+// the agent's colour), E eye, W white, F flame, Y yellow, V leaf, R cheek, S cream.
+export const CREATURES: readonly (readonly string[])[] = [
+  ['....F.....', '...FYF.F..', '.LBFYYFBB.', 'BBEBBBBEBB', 'BRBBAABBRA', '.AA....AA.'],
+  ['........W.', '..L.L.L...', '..BBBBBBB.', 'B.BBBBBBEB', '.BBSSSSSBA', '..A.A.A.A.'],
+  ['..VV..VV..', '...VAAV...', '..BBBBBB..', '.BBWEEWBB.', '.BBBAABBB.', '..AA..AA..'],
+  ['..Y....Y..', '...YBBY...', 'LLLEBBELLL', 'LYLBSSBLYL', '.LLBBBBLL.', '....AA....'],
+  ['..A....A..', '..BBBBBB..', 'L.BEBBEB.L', 'LLBWBBWBLL', '.LLBBABLL.', '...A..A...'],
+  ['..BBBB....', '.BBBBBB...', '.BEBBEB.A.', '.BBBBBBBF.', '..LBBBB.Y.', '....LLB...'],
+]
+const SPRITE_WIDTH = 10
+const SPRITE_HEIGHT = 6
+const SPRITE_ROWS = SPRITE_HEIGHT / 2
+/** A creature and its two label rows: the room each walker keeps to itself. */
+const SLOT = 18
+const STRIP_ROWS = SPRITE_ROWS + 2
+const WALK_MS = 150
 
 const DEFAULT = 0x01000000
-const EYE = 0x141414
+const FIXED: Record<string, number> = { E: 0x141414, W: 0xf5f5f5, F: 0xff7b1c, Y: 0xffd23f, V: 0x5fbf3a, R: 0xff8fa3, S: 0xf2e6c8 }
 
 const rgb = (hex: string): number => parseInt(hex.slice(1), 16)
-const darker = (value: number, by: number): number => {
-  const part = (shift: number) => Math.round(((value >> shift) & 255) * by)
+/** Moves a colour `by` of the way towards `toward`. */
+const mix = (value: number, toward: number, by: number): number => {
+  const part = (shift: number) => {
+    const from = (value >> shift) & 255
+    return Math.round(from + (((toward >> shift) & 255) - from) * by)
+  }
   return (part(16) << 16) | (part(8) << 8) | part(0)
+}
+const colourOf = (ch: string | undefined, body: number): number | undefined => {
+  if (ch === 'B') return body
+  if (ch === 'A') return mix(body, 0, 0.35)
+  if (ch === 'L') return mix(body, 0xffffff, 0.4)
+  return ch === undefined ? undefined : FIXED[ch]
 }
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
@@ -54,23 +77,82 @@ const base64 = (bytes: number[]): string => {
   return out
 }
 
-/** The sprite in half blocks, one terminal row per two pixel rows, as a Raster's packed cells. */
-const cellsFor = (hex: string): string => {
-  const body = rgb(hex)
-  const paint = (ch: string | undefined): number | undefined =>
-    ch === 'B' ? body : ch === 'A' ? darker(body, 0.72) : ch === 'E' ? EYE : undefined
-  const bytes: number[] = []
-  const word = (n: number) => bytes.push(n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >>> 24) & 255)
-  for (let r = 0; r < SPRITE_HEIGHT / 2; r++) {
-    for (let x = 0; x < SPRITE_WIDTH; x++) {
-      const top = paint(SPRITE[r * 2]?.[x])
-      const bottom = paint(SPRITE[r * 2 + 1]?.[x])
-      if (top === undefined && bottom === undefined) word(0x20), word(DEFAULT), word(DEFAULT)
-      else if (bottom === undefined) word(0x2580), word(top ?? DEFAULT), word(DEFAULT)
-      else if (top === undefined) word(0x2584), word(bottom), word(DEFAULT)
-      else word(0x2580), word(top), word(bottom)
-    }
+const hashOf = (key: string): number => {
+  let hash = 0
+  for (const char of key) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
+  return hash
+}
+
+/** Starts at the key's hash and takes the first entry not yet used, so a key keeps its pick. */
+const pick = <T,>(list: readonly T[], key: string, used: Set<T>): T => {
+  const start = hashOf(key) % list.length
+  const chosen = list.map((_, offset) => list[(start + offset) % list.length]).find((c): c is T => c !== undefined && !used.has(c)) ?? (list[start] as T)
+  used.add(chosen)
+  return chosen
+}
+
+/** One creature on the band: what it draws, and where it is walking. */
+export type Walker = { id: string; sprite: readonly string[]; color: string; label: string; detail: string; dim: boolean; x: number; dir: 1 | -1; pace: number }
+
+/** One walking tick: a walker due to move steps a column, or turns round where a neighbour's slot or the edge stops it. */
+export const step = (walkers: readonly Walker[], columns: number, tick: number): Walker[] => {
+  const next = walkers.map(w => ({ ...w }))
+  next.forEach((w, i) => {
+    if (tick % w.pace !== 0) return
+    const lo = (next[i - 1]?.x ?? -SLOT) + SLOT
+    const hi = (next[i + 1]?.x ?? columns) - SLOT
+    const fits = (x: number) => x >= lo && x <= hi
+    if (fits(w.x + w.dir)) w.x += w.dir
+    else if (fits(w.x - w.dir)) w.dir = w.dir === 1 ? -1 : 1
+  })
+  return next
+}
+
+/** Spaces a strip's walkers evenly, alternately facing each way. */
+const spread = (walkers: readonly Walker[], columns: number): Walker[] =>
+  walkers.map((w, i) => ({ ...w, x: Math.max(0, Math.floor(((i + 0.5) * columns) / walkers.length - SLOT / 2)), dir: i % 2 ? -1 : 1 }))
+
+/** A strip as a Raster's packed cells: each creature in half blocks, its role and model beneath it. */
+export const paintStrip = (walkers: readonly Walker[], columns: number, tick: number): string => {
+  const words: number[] = []
+  for (let i = 0; i < columns * STRIP_ROWS; i++) words.push(0x20, DEFAULT, DEFAULT)
+  const put = (x: number, row: number, glyph: number, fg: number, bg: number) => {
+    // Cells are row-major: one past the edge would land on the next row.
+    if (x < 0 || x >= columns) return
+    const at = (row * columns + x) * 3
+    words[at] = glyph
+    words[at + 1] = fg
+    words[at + 2] = bg
   }
+  for (const w of walkers) {
+    const body = rgb(w.color)
+    const rows = w.sprite.map((row, y) => {
+      const facing = w.dir === 1 ? row : [...row].reverse().join('')
+      // The bottom row shuffles a pixel every other tick: a two-frame walk.
+      return y === SPRITE_HEIGHT - 1 && tick % 2 ? facing.slice(-1) + facing.slice(0, -1) : facing
+    })
+    const left = w.x + (SLOT - SPRITE_WIDTH) / 2
+    for (let r = 0; r < SPRITE_ROWS; r++) {
+      for (let x = 0; x < SPRITE_WIDTH; x++) {
+        const top = colourOf(rows[r * 2]?.[x], body)
+        const bottom = colourOf(rows[r * 2 + 1]?.[x], body)
+        if (top !== undefined) put(left + x, r, 0x2580, top, bottom ?? DEFAULT)
+        else if (bottom !== undefined) put(left + x, r, 0x2584, bottom, DEFAULT)
+      }
+    }
+    const label = (text: string, row: number, fg: number, keepEnd: boolean) => {
+      // A Raster cell holds one width-1 character; task ids come from file names.
+      let shown = text.replace(/[^\x20-\x7e·]/g, '?')
+      if (shown.length > SLOT) shown = keepEnd ? `~${shown.slice(1 - SLOT)}` : `${shown.slice(0, SLOT - 1)}~`
+      const start = w.x + Math.floor((SLOT - shown.length) / 2)
+      for (let i = 0; i < shown.length; i++) put(start + i, row, shown.charCodeAt(i), fg, DEFAULT)
+    }
+    // Names differ at the end (task ids, plugin:agent); models at the start.
+    label(w.label, SPRITE_ROWS, w.dim ? mix(body, 0, 0.45) : body, true)
+    label(w.detail, SPRITE_ROWS + 1, w.dim ? 0x5a5a5a : 0x9ca3af, false)
+  }
+  const bytes: number[] = []
+  for (const n of words) bytes.push(n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >>> 24) & 255)
   return base64(bytes)
 }
 
@@ -123,18 +205,8 @@ export const parseFleetFiles = (files: Readonly<Record<string, string>>): CrewOc
       if (kind !== 'ship' && kind !== 'scout' && kind !== 'secondmate') return []
       const status = parseCrewStatus(files[`${taskId}.status`] ?? '')
       const role = kind === 'secondmate' ? `secondmate · ${taskId}` : taskId
-      return [{ id: `crew:${taskId}`, role, model: status.state, color: crewColor(status.state, taskId, used[status.state]), state: status.state, finished: status.finished }]
+      return [{ id: `crew:${taskId}`, role, model: status.state, color: pick(CREW_STATE_COLORS[status.state], taskId, used[status.state]), state: status.state, finished: status.finished }]
     })
-}
-
-const crewColor = (state: FleetStatus, taskId: string, used: Set<string>): string => {
-  const colors = CREW_STATE_COLORS[state]
-  let hash = 0
-  for (const char of taskId) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
-  const start = hash % colors.length
-  const color = colors.map((_, offset) => colors[(start + offset) % colors.length]).find(candidate => candidate !== undefined && !used.has(candidate)) ?? colors[start] ?? '#ffffff'
-  used.add(color)
-  return color
 }
 
 const loadCrew = async ($: EngineInterface, home: string): Promise<CrewOctopus[]> => {
@@ -160,6 +232,10 @@ const loadCrew = async ($: EngineInterface, home: string): Promise<CrewOctopus[]
 
 export const register: Register = (on, options: PluginOptions) => {
   let stopFleetPolling: ReturnType<EngineInterface['clock']['every']> | undefined
+  let stopWalking: ReturnType<EngineInterface['clock']['every']> | undefined
+  // The walking band as last drawn; unset while hidden or drawn without a Raster.
+  let stage: { requestId: string; columns: number; strips: Walker[][] } | undefined
+  let tick = 0
 
   // A reload runs session.start again: read the models afresh; the hidden choice is kept.
   on('session.start', async ($, e, next) => {
@@ -184,6 +260,19 @@ export const register: Register = (on, options: PluginOptions) => {
     })
     // The band's buttons need a mouse or ctrl+x tab; the command works from any terminal.
     await $.command.register({ name: 'octopuses', description: 'Hide or show the octopuses', immediate: true })
+
+    stopWalking?.cancel()
+    stopWalking = $.clock.every(WALK_MS, async () => {
+      const shown = stage
+      if (!shown) return
+      tick++
+      for (const [i, strip] of shown.strips.entries()) {
+        const moved = step(strip, shown.columns, tick)
+        shown.strips[i] = moved
+        // A deny (the band redrawn at another size, or gone) is fine: the next render resets the stage.
+        await $.ui.blit({ requestId: shown.requestId, key: `strip:${i}`, cells: paintStrip(moved, shown.columns, tick) })
+      }
+    })
 
     const home = asText(options.firstmateHome)
     if (home) {
@@ -233,7 +322,10 @@ export const register: Register = (on, options: PluginOptions) => {
     const list = await read($, octopuses)
     const crew = await read($, crewOctopuses)
     const hidden = await read($, isHidden)
-    if (e.props.hasSurvey) return next(e)
+    if (e.props.hasSurvey) {
+      stage = undefined
+      return next(e)
+    }
 
     const displayed: Array<Octopus | CrewOctopus> = [...list, ...crew]
 
@@ -242,8 +334,45 @@ export const register: Register = (on, options: PluginOptions) => {
     const Raster = e.surface === 'terminal' ? (ui as { Raster?: (props: RasterProps) => JSX.Element }).Raster : undefined
     const toggle = () => update($, isHidden, value => !value)
 
+    if (hidden || !Raster) stage = undefined
     if (hidden) {
       return <Button key="show-octopuses" label={`Show octopuses (${displayed.length})`} onPress={toggle} />
+    }
+
+    if (Raster) {
+      const columns = Math.min(512, Math.max(SLOT, e.props.bodyColumns || 80))
+      const used = new Set<readonly string[]>()
+      const walkers: Walker[] = displayed.map(o => ({
+        id: o.id,
+        sprite: pick(CREATURES, o.id, used),
+        color: o.color,
+        label: o.role,
+        detail: 'state' in o ? o.state : o.model,
+        dim: 'finished' in o && isCrewDimmed(o),
+        x: 0,
+        dir: 1,
+        pace: 1 + (hashOf(o.id) % 3),
+      }))
+      // Each strip leaves its walkers about four columns apiece to wander in.
+      const perStrip = Math.max(1, Math.floor(columns / (SLOT + 4)))
+      const previous = stage?.columns === columns ? stage.strips : []
+      const strips = Array.from({ length: Math.ceil(walkers.length / perStrip) }, (_, i) => {
+        const members = walkers.slice(i * perStrip, (i + 1) * perStrip)
+        const old = previous[i]
+        // Same walkers in the same order keep their places; any change spaces the strip out afresh.
+        return old && old.map(w => w.id).join('\n') === members.map(w => w.id).join('\n')
+          ? members.map((w, j) => ({ ...w, x: old[j]?.x ?? 0, dir: old[j]?.dir ?? 1 }))
+          : spread(members, columns)
+      })
+      stage = { requestId: e.requestId, columns, strips }
+      return (
+        <Box flexDirection="column">
+          {strips.map((strip, i) => (
+            <Raster key={`strip:${i}`} columns={columns} rows={STRIP_ROWS} cells={paintStrip(strip, columns, tick)} />
+          ))}
+          <Button key="hide" label="Hide octopuses" onPress={toggle} />
+        </Box>
+      )
     }
 
     return (
@@ -251,15 +380,11 @@ export const register: Register = (on, options: PluginOptions) => {
         <Box flexWrap="wrap">
           {displayed.map(o => (
             <Box flexDirection="column" key={`o:${o.id}`} marginRight={3}>
-              {Raster ? (
-                <Raster key={`r:${o.id}`} columns={SPRITE_WIDTH} rows={SPRITE_HEIGHT / 2} cells={cellsFor(o.color)} />
-              ) : (
-                ART.map((line, i) => (
-                  <Text color={o.color} key={`l:${i}`}>
-                    {line}
-                  </Text>
-                ))
-              )}
+              {ART.map((line, i) => (
+                <Text color={o.color} key={`l:${i}`}>
+                  {line}
+                </Text>
+              ))}
               <Text bold color={o.color} dimColor={'finished' in o && isCrewDimmed(o)}>
                 {o.role}
               </Text>

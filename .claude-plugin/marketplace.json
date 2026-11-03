@@ -10,7 +10,7 @@
     {
       "name": "octopus-crew",
       "source": "./octopus-crew",
-      "description": "Shows a pixel mascot for the current model, the advisor and each subagent model, each in its own colour."
+      "description": "Shows a walking pixel creature for the current model, the advisor and each subagent model, each in its own colour."
     }
   ]
 }
