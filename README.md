@@ -5,7 +5,7 @@ Two small mods for Claude Code.
 | Mod | What it does |
 | --- | --- |
 | `delete-guard` | While the `clean-generated-artifacts` skill runs (from the moment it loads until that turn ends), holds any delete command (`rm`, `rmdir`, `unlink`, `shred`, `trash`, `git rm`, `git clean`, `find -delete`) and opens a pane listing every file. Toggle each file between delete and keep, then Confirm or Refuse all. Files marked keep are dropped from the command when it is retried. Open the pane by hand with `/delete-guard`. |
-| `octopus-crew` | Draws a small original pixel creature above the prompt for the current model (Claude orange), advisor and subagent models, each live Claude Code subagent, and optionally each firstmate ship, scout, or secondmate. The creatures walk along the band with their name and model beneath them, turning round at the edges and at each other. Firstmate creatures show the task id and state colour. |
+| `octopus-crew` | While a Claude Code subagent (or optionally a firstmate ship, scout, or secondmate) exists, draws a small original pixel creature above the prompt for it, alongside the current model (Claude orange), advisor and subagent models. With nothing spawned, nothing is drawn. The creatures walk along the band with their name and model beneath them, turning round at the edges and at each other. Firstmate creatures show the task id and state colour. |
 
 ## Install
 

@@ -34,9 +34,26 @@ const engine = (on: On, settings: Record<string, unknown>) => {
 }
 
 
+test('nothing is drawn until a subagent is spawned, and the band leaves when the last one ends', async ($, on) => {
+  engine(on, {})
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: 'agent-1' }))
+  await $.session.start({ source: 'startup', cwd: '/work' } as never)
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Raster' })).toBeUndefined()
+  expect(await ui.find({ key: 'hide' })).toBeUndefined()
+
+  await $.agent.spawn({ prompt: 'x', subagentType: 'Explore' } as never)
+  expect(await ui.find({ type: 'Raster' })).toBeDefined()
+
+  await $.turn.complete({ agentId: 'agent-1', answer: 'finished' } as never)
+  expect(await ui.find({ type: 'Raster' })).toBeUndefined()
+})
+
 test('a load draws the current model, the advisor and the subagents, in different colours', async ($, on) => {
   engine(on, { advisorModel: 'opus', env: { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' } })
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'agent-1' }))
   await $.session.start({ source: 'startup', cwd: '/work' } as never)
+  await $.agent.spawn({ prompt: 'x', subagentType: 'Explore' } as never)
 
   const ui = await $.ui.mount(DESKTOP)
   const text = await ui.findAll({ type: 'Text' })
@@ -48,7 +65,7 @@ test('a load draws the current model, the advisor and the subagents, in differen
   expect(shown).toContain('haiku')
 
   const hues = new Set(text.map(t => String(t.props.color ?? '')).filter(Boolean))
-  expect(hues.size).toBe(3)
+  expect(hues.size).toBe(4)
   expect(hues.has('#d77757')).toBe(true)
 })
 
@@ -174,7 +191,9 @@ test('six original creatures in the painter letters; the fixed three get three d
   }
 
   engine(on, {})
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: 'agent-1' }))
   await $.session.start({ source: 'startup', cwd: '/work' } as never)
+  await $.agent.spawn({ prompt: 'x', subagentType: 'Explore' } as never)
   const ui = await $.ui.mount(PANE)
   const strip = await ui.find({ type: 'Raster' })
   expect(strip?.props.columns).toBe(120)
@@ -183,8 +202,8 @@ test('six original creatures in the painter letters; the fixed three get three d
   expect(rows[3]).toContain('current')
   expect(rows[3]).toContain('advisor')
   expect(rows[3]).toContain('subagents')
-  // Three walkers spread across 120 columns stand at 11, 51 and 91.
-  const shapes = [11, 51, 91].map(x => rows.slice(0, 3).map(r => r.slice(x, x + 18)).join('|'))
+  // Four walkers spread across 120 columns stand at 6, 36, 66 and 96; the first three are the fixed ones.
+  const shapes = [6, 36, 66].map(x => rows.slice(0, 3).map(r => r.slice(x, x + 18)).join('|'))
   expect(new Set(shapes).size).toBe(3)
 })
 
@@ -196,7 +215,9 @@ test('the creatures walk: the clock repaints the strip, names travelling with th
     if ('cells' in e) blits.push(e.cells)
     return { value: {} }
   })
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: 'agent-1' }))
   await $.session.start({ source: 'startup', cwd: '/work' } as never)
+  await $.agent.spawn({ prompt: 'x', subagentType: 'Explore' } as never)
   const ui = await $.ui.mount(PANE)
   const first = String((await ui.find({ type: 'Raster' }))?.props.cells)
   await clock.advance(1500)
@@ -214,7 +235,9 @@ test('hidden, the band stops repainting', async ($, on) => {
     blits++
     return { value: {} }
   })
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: 'agent-1' }))
   await $.session.start({ source: 'startup', cwd: '/work' } as never)
+  await $.agent.spawn({ prompt: 'x', subagentType: 'Explore' } as never)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'hide' })
   blits = 0

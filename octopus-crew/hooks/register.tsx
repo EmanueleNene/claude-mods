@@ -322,7 +322,9 @@ export const register: Register = (on, options: PluginOptions) => {
     const list = await read($, octopuses)
     const crew = await read($, crewOctopuses)
     const hidden = await read($, isHidden)
-    if (e.props.hasSurvey) {
+    // The band appears only while a subagent or crew worker exists; the fixed three alone draw nothing.
+    const anySpawned = crew.length > 0 || list.some(o => !HEAD.includes(o.id))
+    if (e.props.hasSurvey || !anySpawned) {
       stage = undefined
       return next(e)
     }
